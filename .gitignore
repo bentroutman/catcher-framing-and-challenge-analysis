@@ -1,0 +1,7 @@
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Mac system files
+.DS_Store
