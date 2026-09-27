@@ -1,9 +1,6 @@
 # Catcher Framing & Automated Challenge System Analysis
-# Ben Troutman
-#
-# Extracted from docs/code-walkthrough.pdf. The input files (mlb_data_prompt.csv,
-# milb_data_prompt.csv, re288_2023_prompt.csv) were provided with the project
-# prompt and are not included in this repository.
+
+# Input files (mlb_data_prompt.csv, milb_data_prompt.csv, re288_2023_prompt.csv) are not included in this repository
 
 library(dplyr)
 library(tidyr)
@@ -99,8 +96,7 @@ mlb_data_summary |>
 
 # Load Run Expectancy Data
 
-# I changed the formatting of the data in Excel to prevent the count from converting
-# to a date
+# I changed the formatting of the data in Excel to prevent the count from converting to a date
 run_expectancy_data <- read.csv("re288_2023_prompt.csv")
 
 # Determine "true" strikes using coordinates
@@ -269,8 +265,7 @@ params <- list(objective = "binary:logistic", eval_metric = "auc",
 xgb_model <- xgb.train(params = params, data = dtrain, nrounds = 200,
   verbose = 1)
 
-# Predict MiLB challenge probability (used for determining challengable opportunities
-# in MLB)
+# Predict MiLB challenge probability (used for determining challengable opportunities in MLB)
 features <- as.matrix(features)
 preds <- as.numeric(predict(xgb_model, features))
 milb_data$ChallengeProb[milb_data$ChallengesLeft > 0] <- preds
