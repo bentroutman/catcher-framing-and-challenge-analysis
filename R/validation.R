@@ -149,18 +149,15 @@ print(challenge_results)
 
 # A challenge can only succeed if the call did not match the true zone. This
 # is how often that rule matches the Triple-A outcome
-rule_check <- challenged_pitches |> filter(!is.na(Error))
+rule_check <- milb_data |> filter(challenged == 1, !is.na(Error))
 cat("Challenges:", nrow(rule_check), "\n")
-cat("Success when call was wrong:", success_if_wrong, "\n")
-cat("Success when call was right:", success_if_right, "\n")
 cat("Rule matches outcome:", mean(rule_check$challenge_successful ==
     rule_check$Error), "\n")
 
 # Overturn rate per pitch in the Triple-A data, actual vs predicted
 challenge_wrong_call <- !is.na(challenge_data$Error) &
   challenge_data$Error == 1
-predicted_overturn <- challenge_held_out *
-  ifelse(challenge_wrong_call, success_if_wrong, success_if_right)
+predicted_overturn <- challenge_held_out * challenge_wrong_call
 actual_overturn <- challenge_data$challenged == 1 &
   challenge_data$challenge_successful == 1
 cat("Actual overturn rate per pitch:", mean(actual_overturn), "\n")
@@ -225,10 +222,7 @@ for (threshold in c(0.8, 0.9, 0.95)) {
       quantile(milb_challenge_prob, threshold)
     sim_wrong_call <- !is.na(sim$Error) & sim$Error == 1
     sim$ChallengeSuccessProb <- 0
-    sim$ChallengeSuccessProb[sim$Challengeable & sim_wrong_call] <-
-      success_if_wrong
-    sim$ChallengeSuccessProb[sim$Challengeable & !sim_wrong_call] <-
-      success_if_right
+    sim$ChallengeSuccessProb[sim$Challengeable & sim_wrong_call] <- 1
     sim_summary <- sim |>
       filter(!is.na(ExtraRuns)) |>
       mutate(AdjustedRuns = ExtraRuns *

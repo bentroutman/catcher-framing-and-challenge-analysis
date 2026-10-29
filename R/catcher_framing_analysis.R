@@ -272,16 +272,6 @@ preds <- as.numeric(predict(xgb_model, features))
 milb_data$ChallengeProb[milb_data$ChallengesLeft > 0] <- preds
 milb_data[milb_data$ChallengesLeft == 0, ]$ChallengeProb <- 0
 
-# Challenge success rates. A challenge can only succeed if the umpire's call did
-# not match the true zone, so I use the Triple-A success rate for each case
-challenged_pitches <- milb_data |> filter(challenged == 1)
-success_if_wrong <- mean(
-  challenged_pitches$challenge_successful[challenged_pitches$Error == 1],
-  na.rm = TRUE)
-success_if_right <- mean(
-  challenged_pitches$challenge_successful[challenged_pitches$Error == 0],
-  na.rm = TRUE)
-
 # There is no challenges left value in the MLB data, so I sample one from the
 # Triple-A pitches in the same inning, since teams run out of challenges as the
 # game goes on. Over a large sample, this is representative.
@@ -312,13 +302,11 @@ mlb_data <- mlb_data |>
   mutate(Challengeable =
       ChallengeProb > quantile(milb_data$ChallengeProb, 0.9))
 
-# Predict challenge effectiveness
+# Predict challenge effectiveness. A challenge can only succeed if the umpire's
+# call did not match the true zone, so a challenged wrong call is overturned
 wrong_call <- !is.na(mlb_data$Error) & mlb_data$Error == 1
 mlb_data$ChallengeSuccessProb <- 0
-mlb_data$ChallengeSuccessProb[mlb_data$Challengeable & wrong_call] <-
-  success_if_wrong
-mlb_data$ChallengeSuccessProb[mlb_data$Challengeable & !wrong_call] <-
-  success_if_right
+mlb_data$ChallengeSuccessProb[mlb_data$Challengeable & wrong_call] <- 1
 
 # Summarize data
 mlb_data <- mlb_data |>
