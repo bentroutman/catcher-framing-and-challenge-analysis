@@ -1,6 +1,6 @@
 # Catcher Framing & Automated Challenge System Analysis: Model Validation
 
-# Checks how the strike probability GAMs and the challenge XGBoost models do on
+# Checks how the strike probability GAMs and the challenge XGBoost model do on
 # games they were not trained on, and how much the framing results move.
 # Input files (mlb_data_prompt.csv, milb_data_prompt.csv, re288_2023_prompt.csv) are not included in this repository
 
@@ -108,13 +108,13 @@ cat("Reliability of full sample:", 2 * split_half_cor / (1 + split_half_cor),
   "\n")
 
 # ----------------------------------------------------------------------
-# Part 3: Challenge models, 5-fold cross validation by game on Triple-A data
+# Part 3: Challenge model, 5-fold cross validation by game on Triple-A data
 # ----------------------------------------------------------------------
 
 params <- list(objective = "binary:logistic", eval_metric = "auc",
   max_depth = 6, eta = 0.1, subsample = 0.8, colsample_bytree = 0.8)
 
-# Challenge model uses the same features as the main script
+# Same features as the main script
 challenge_data <- milb_data |> filter(ChallengesLeft > 0)
 challenge_features <- challenge_data |>
   select(sz_plate_x, z_center, RelSpeed, InducedVertBreak, HorzBreak,
@@ -139,57 +139,35 @@ for (k in 1:num_folds) {
 }
 challenge_in_sample <- predict(xgb_model, as.matrix(challenge_features))
 
-# Success model uses the same features as the main script
-success_data <- milb_data |> filter(challenged == 1)
-success_features <- success_data |>
-  select(sz_plate_x, z_center, RelSpeed, InducedVertBreak, HorzBreak,
-    Runners, ScoreDiff, outs, inning, Error, count, PitcherThrows,
-    CalledStrikeInitially, TrueStrike) |>
-  mutate(PitcherThrows = as.numeric(factor(PitcherThrows)),
-    count = as.numeric(factor(count)))
-success_label <- success_data$challenge_successful
-success_games <- unique(success_data$game_pk)
-success_game_fold <- sample(rep(1:num_folds, length.out =
-    length(success_games)))
-success_fold <- success_game_fold[match(success_data$game_pk, success_games)]
-success_held_out <- rep(NA, nrow(success_data))
-for (k in 1:num_folds) {
-  dtrain <- xgb.DMatrix(as.matrix(success_features[success_fold != k, ]),
-    label = success_label[success_fold != k])
-  fit <- xgb.train(params, dtrain, nrounds = 200)
-  success_held_out[success_fold == k] <- predict(fit,
-    as.matrix(success_features[success_fold == k, ]))
-}
-success_in_sample <- predict(xgb_success, as.matrix(success_features))
-
-# Base rate rows predict the overall rate for every pitch
-xgb_results <- bind_rows(
+# Base rate row predicts the overall rate for every pitch
+challenge_results <- bind_rows(
   evaluate(challenge_label, challenge_in_sample, "Challenge in-sample"),
   evaluate(challenge_label, challenge_held_out, "Challenge held-out games"),
   evaluate(challenge_label, rep(mean(challenge_label),
-      length(challenge_label)), "Challenge base rate"),
-  evaluate(success_label, success_in_sample, "Success in-sample"),
-  evaluate(success_label, success_held_out, "Success held-out games"),
-  evaluate(success_label, rep(mean(success_label), length(success_label)),
-    "Success base rate"))
-print(xgb_results)
+      length(challenge_label)), "Challenge base rate"))
+print(challenge_results)
+
+# A challenge can only succeed if the call did not match the true zone. This
+# is how often that rule matches the Triple-A outcome
+rule_check <- challenged_pitches |> filter(!is.na(Error))
+cat("Challenges:", nrow(rule_check), "\n")
+cat("Success when call was wrong:", success_if_wrong, "\n")
+cat("Success when call was right:", success_if_right, "\n")
+cat("Rule matches outcome:", mean(rule_check$challenge_successful ==
+    rule_check$Error), "\n")
 
 # Overturn rate per pitch in the Triple-A data, actual vs predicted
-success_all_features <- challenge_data |>
-  select(sz_plate_x, z_center, RelSpeed, InducedVertBreak, HorzBreak,
-    Runners, ScoreDiff, outs, inning, Error, count, PitcherThrows,
-    CalledStrikeInitially, TrueStrike) |>
-  mutate(PitcherThrows = as.numeric(factor(PitcherThrows)),
-    count = as.numeric(factor(count)))
+challenge_wrong_call <- !is.na(challenge_data$Error) &
+  challenge_data$Error == 1
 predicted_overturn <- challenge_held_out *
-  predict(xgb_success, as.matrix(success_all_features))
+  ifelse(challenge_wrong_call, success_if_wrong, success_if_right)
 actual_overturn <- challenge_data$challenged == 1 &
   challenge_data$challenge_successful == 1
 cat("Actual overturn rate per pitch:", mean(actual_overturn), "\n")
 cat("Predicted overturn rate per pitch:", mean(predicted_overturn), "\n")
 
 # ----------------------------------------------------------------------
-# Part 4: How much does the 10-20% change depend on the assumptions?
+# Part 4: How much does the change in framing value depend on the assumptions?
 # ----------------------------------------------------------------------
 
 # Percent change in framing value for the 10 best and 10 worst catchers
@@ -209,16 +187,29 @@ cat("SD of runs per 7,500 before:", sd(catchers$WithoutChallengesPer7500),
   "after:", sd(catchers$RunsPer7500), "\n")
 
 # The main script assumes the top 10% of challenge probability gets challenged
-# and that challenges left is a random sample from the Triple-A data. Here I
-# repeat the simulation with different thresholds and seeds.
+# and that challenges left is a sample from Triple-A pitches in the same
+# inning. XGBoost also uses random subsamples, so the challenge model changes a
+# little with the seed. Here I repeat the simulation with different thresholds
+# and seeds, refitting the challenge model each time.
 sensitivity <- data.frame(Threshold = numeric(), Seed = integer(),
   BestPctChange = numeric(), WorstPctChange = numeric())
 for (threshold in c(0.8, 0.9, 0.95)) {
-  for (seed in 1:3) {
+  for (seed in 1:5) {
+    set.seed(seed)
+    sim_model <- xgb.train(params, xgb.DMatrix(as.matrix(challenge_features),
+        label = challenge_label), nrounds = 200)
+    milb_challenge_prob <- rep(0, nrow(milb_data))
+    milb_challenge_prob[milb_data$ChallengesLeft > 0] <- predict(sim_model,
+      as.matrix(challenge_features))
     sim <- mlb_data
     set.seed(seed)
-    sim$ChallengesLeft <- sample(milb_data$ChallengesLeft, size = nrow(sim),
-      replace = TRUE)
+    sim$ChallengesLeft <- NA
+    for (i in unique(sim$inning)) {
+      pool <- milb_data$ChallengesLeft[
+        milb_data$inning == min(i, max(milb_data$inning))]
+      rows <- sim$inning == i
+      sim$ChallengesLeft[rows] <- sample(pool, sum(rows), replace = TRUE)
+    }
     sim$ChallengeProb <- 0
     has_challenges <- sim$ChallengesLeft > 0
     sim_features <- sim |>
@@ -228,19 +219,16 @@ for (threshold in c(0.8, 0.9, 0.95)) {
         PitcherThrows, count, TrueStrike, CalledStrikeInitially = strike) |>
       mutate(PitcherThrows = as.numeric(factor(PitcherThrows)),
         count = as.numeric(factor(count)))
-    sim$ChallengeProb[has_challenges] <- predict(xgb_model,
+    sim$ChallengeProb[has_challenges] <- predict(sim_model,
       as.matrix(sim_features))
     sim$Challengeable <- sim$ChallengeProb >
-      quantile(milb_data$ChallengeProb, threshold)
-    sim_success_features <- sim |>
-      select(sz_plate_x, z_center, RelSpeed, InducedVertBreak, HorzBreak,
-        Runners, ScoreDiff, outs, inning, Error, count, PitcherThrows,
-        CalledStrikeInitially = strike, TrueStrike) |>
-      mutate(PitcherThrows = as.numeric(factor(PitcherThrows)),
-        count = as.numeric(factor(count)))
+      quantile(milb_challenge_prob, threshold)
+    sim_wrong_call <- !is.na(sim$Error) & sim$Error == 1
     sim$ChallengeSuccessProb <- 0
-    sim$ChallengeSuccessProb[sim$Challengeable] <- predict(xgb_success,
-      as.matrix(sim_success_features[sim$Challengeable, ]))
+    sim$ChallengeSuccessProb[sim$Challengeable & sim_wrong_call] <-
+      success_if_wrong
+    sim$ChallengeSuccessProb[sim$Challengeable & !sim_wrong_call] <-
+      success_if_right
     sim_summary <- sim |>
       filter(!is.na(ExtraRuns)) |>
       mutate(AdjustedRuns = ExtraRuns *
@@ -264,6 +252,13 @@ for (threshold in c(0.8, 0.9, 0.95)) {
   }
 }
 print(sensitivity)
+sensitivity |>
+  group_by(Threshold) |>
+  summarize(BestMin = min(BestPctChange), BestMax = max(BestPctChange),
+    WorstMin = min(WorstPctChange), WorstMax = max(WorstPctChange)) |>
+  print()
+cat("Mean over all runs, best 10:", mean(sensitivity$BestPctChange),
+  "worst 10:", mean(sensitivity$WorstPctChange), "\n")
 
 # Bootstrap whole games to see how much the result depends on which games are
 # in the sample. The challenge models are not refit, so this only covers the

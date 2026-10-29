@@ -156,7 +156,7 @@ mlb_data_summary_contextualized |>
     Max = max(RunsPer7500))
 
 # ----------------------------------------------------------------------
-# Part 2: Framing value with a 2-challenge ABS system (models trained on Triple-A data)
+# Part 2: Framing value with a 2-challenge ABS system (based on Triple-A data)
 # ----------------------------------------------------------------------
 
 # Load MiLB Data
@@ -262,6 +262,7 @@ dtrain <- xgb.DMatrix(data = as.matrix(features), label = label)
 params <- list(objective = "binary:logistic", eval_metric = "auc",
   max_depth = 6, eta = 0.1, subsample = 0.8,
   colsample_bytree = 0.8)
+set.seed(1)
 xgb_model <- xgb.train(params = params, data = dtrain, nrounds = 200,
   verbose = 1)
 
@@ -271,28 +272,27 @@ preds <- as.numeric(predict(xgb_model, features))
 milb_data$ChallengeProb[milb_data$ChallengesLeft > 0] <- preds
 milb_data[milb_data$ChallengesLeft == 0, ]$ChallengeProb <- 0
 
-# Challenge success model
-data_success <- milb_data |> filter(challenged == 1)
-features <- data_success |>
-  select(sz_plate_x, z_center, RelSpeed, InducedVertBreak, HorzBreak,
-    Runners, ScoreDiff, outs, inning, Error, count, PitcherThrows,
-    CalledStrikeInitially, TrueStrike) |>
-  mutate(PitcherThrows = as.numeric(factor(PitcherThrows)),
-    count = as.numeric(factor(count)))
-label <- data_success$challenge_successful
-dtrain <- xgb.DMatrix(as.matrix(features), label = label)
-params <- list(objective = "binary:logistic", eval_metric = "auc",
-  max_depth = 6, eta = 0.1, subsample = 0.8,
-  colsample_bytree = 0.8)
-xgb_success <- xgb.train(params, data = dtrain, nrounds = 200)
+# Challenge success rates. A challenge can only succeed if the umpire's call did
+# not match the true zone, so I use the Triple-A success rate for each case
+challenged_pitches <- milb_data |> filter(challenged == 1)
+success_if_wrong <- mean(
+  challenged_pitches$challenge_successful[challenged_pitches$Error == 1],
+  na.rm = TRUE)
+success_if_right <- mean(
+  challenged_pitches$challenge_successful[challenged_pitches$Error == 0],
+  na.rm = TRUE)
 
-# Created a random sample of challenges left, as there is currently no value for it.
-# Over a large sample, this is representative.
+# There is no challenges left value in the MLB data, so I sample one from the
+# Triple-A pitches in the same inning, since teams run out of challenges as the
+# game goes on. Over a large sample, this is representative.
 set.seed(1)
-mlb_data$ChallengesLeft <- sample(
-  milb_data$ChallengesLeft,
-  size = nrow(mlb_data),
-  replace = TRUE)
+mlb_data$ChallengesLeft <- NA
+for (i in unique(mlb_data$inning)) {
+  pool <- milb_data$ChallengesLeft[
+    milb_data$inning == min(i, max(milb_data$inning))]
+  rows <- mlb_data$inning == i
+  mlb_data$ChallengesLeft[rows] <- sample(pool, sum(rows), replace = TRUE)
+}
 
 # Predict challenge use for MLB using AAA data
 features <- mlb_data |>
@@ -313,16 +313,12 @@ mlb_data <- mlb_data |>
       ChallengeProb > quantile(milb_data$ChallengeProb, 0.9))
 
 # Predict challenge effectiveness
-features_all <- mlb_data |>
-  select(sz_plate_x, z_center, RelSpeed, InducedVertBreak, HorzBreak,
-    Runners, ScoreDiff, outs, inning, Error, count, PitcherThrows,
-    CalledStrikeInitially = strike, TrueStrike) |>
-  mutate(PitcherThrows = as.numeric(factor(PitcherThrows)),
-    count = as.numeric(factor(count)))
+wrong_call <- !is.na(mlb_data$Error) & mlb_data$Error == 1
 mlb_data$ChallengeSuccessProb <- 0
-mlb_data$ChallengeSuccessProb[mlb_data$Challengeable] <-
-  predict(xgb_success,
-    as.matrix(features_all[mlb_data$Challengeable, ]))
+mlb_data$ChallengeSuccessProb[mlb_data$Challengeable & wrong_call] <-
+  success_if_wrong
+mlb_data$ChallengeSuccessProb[mlb_data$Challengeable & !wrong_call] <-
+  success_if_right
 
 # Summarize data
 mlb_data <- mlb_data |>

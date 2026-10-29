@@ -26,9 +26,8 @@ The project is structured around three main components:
      - A context-specific method based on run expectancy (count, baserunners, outs)
 
 3. **Challenge System Modeling**
-   - Trained XGBoost models on Triple-A data to estimate:
-     - Probability a pitch is challenged
-     - Probability a challenge is successful, given a challenge
+   - Trained an XGBoost model on Triple-A data to estimate the probability a pitch is challenged
+   - Used the Triple-A success rate of a challenge, which depends on whether the umpire's call matched the true zone
    - Combined to estimate pitch-level overturn probability (~1%)
    - Applied to MLB data to simulate changes in framing value distributions
 
@@ -37,9 +36,9 @@ The project is structured around three main components:
 ## Key Findings
 
 - Catcher framing value remains significant under a challenge system, though its impact is reduced
-- The 10 best framers lose about 21% of their framing value, and the result stays between 17% and 22% under the different assumptions I tested (see Validation)
-- The 10 worst framers see their negative value shrink by only about 4%
-- The overall distribution compresses toward zero, and the standard deviation across catchers falls from 8.6 to 7.6 runs per 7,500 pitches
+- The 10 best framers lose about 9% of their framing value (between 7% and 11% across the assumptions I tested, see Validation)
+- The 10 worst framers see their negative value shrink by about 15% (between 12% and 18%) due to overturned egregious misses
+- The overall distribution compresses toward zero, and the standard deviation across catchers falls from 8.6 to 7.7 runs per 7,500 pitches
 - Context-specific framing exhibits higher variance and better captures in-game impact, while context-neutral framing is more suitable for skill evaluation
 
 ---
@@ -48,6 +47,8 @@ The project is structured around three main components:
 
 - **GAMs** were chosen to capture smooth, non-linear spatial effects of pitch location
 - **XGBoost** was used for challenge modeling due to its ability to handle interactions and nonlinear decision boundaries
+- A challenge can only succeed if the umpire's call did not match the true zone, so success uses the Triple-A rate for each case (96% when the call was wrong, 4% when it was right) instead of a second model
+- MLB data has no challenges left value, so it is sampled from Triple-A pitches in the same inning, since teams run out of challenges as the game goes on
 - Basis dimension (`k = 55`) selected to balance bias and variance, validated using k-index diagnostics
 - Framing value normalized to runs per 7,500 taken pitches to approximate a full season workload
 - All models were checked on games they were not trained on (see Validation)
@@ -58,7 +59,9 @@ The project is structured around three main components:
 
 `R/validation.R` checks the models on held-out games, so no game is in both the training and test data. Every number below comes from running that script on the provided data.
 
-**Strike probability GAMs** (5-fold cross validation by game, MLB data)
+### Strike probability GAMs
+
+5-fold cross validation by game on the MLB data.
 
 | Model | AUC | Log loss | Accuracy |
 |---|---|---|---|
@@ -68,34 +71,41 @@ The project is structured around three main components:
 
 The held-out results match the in-sample results, so the GAMs are not overfitting. Calibration also holds up. In each decile of predicted strike probability, the actual strike rate is within a percentage point or so of the prediction (for example 0.392 predicted and 0.394 actual in the seventh decile).
 
-**Framing value stability.** I rebuilt framing value from the held-out predictions and split each catcher's pitches into odd and even games. Across 47 catchers with at least 1,500 pitches in each half, the correlation is 0.72 (about 0.83 after a Spearman-Brown correction for using the full sample), so the metric is a fairly stable measure of the catcher.
+### Framing value stability
 
-**Challenge models** (5-fold cross validation by game, Triple-A data)
+I rebuilt framing value from the held-out predictions and split each catcher's pitches into odd and even games. Across 47 catchers with at least 1,500 pitches in each half, the correlation is 0.72 (about 0.83 after a Spearman-Brown correction for using the full sample), so the metric is a fairly stable measure of the catcher.
+
+### Challenge model
+
+5-fold cross validation by game on the Triple-A data.
 
 | Model | AUC | Log loss |
 |---|---|---|
-| Challenge, in-sample | 0.962 | 0.056 |
+| Challenge, in-sample | 0.961 | 0.057 |
 | Challenge, held-out games | 0.937 | 0.066 |
 | Challenge, base rate only | 0.500 | 0.102 |
-| Success, in-sample | 1.000 | 0.004 |
-| Success, held-out games | 0.999 | 0.040 |
-| Success, base rate only | 0.500 | 0.691 |
 
-Challenges are rare (about 2% of pitches), so accuracy is not useful for the challenge model and I use AUC and log loss. The challenge model loses a little on new games, but it still beats the base rate by a wide margin. The success model is almost given the answer, since a challenge succeeds when the umpire's call did not match the true zone and the model has that as a feature. Its AUC is high by construction and should not be read as strong evidence on its own.
+Challenges are rare (about 2% of pitches), so accuracy is not useful and I use AUC and log loss. The model loses a little on new games, but it still beats the base rate by a wide margin.
 
-As a check on the overturn probability, the predicted rate of overturned calls in the Triple-A data is 1.12% per pitch (held-out challenge probability times success probability), and the actual rate is 1.13%.
+An earlier version used a second XGBoost model for challenge success. It reached an AUC of 0.999, but only because it was given whether the call matched the true zone, and in the MLB data it gave an average 26% overturn probability to calls that were correct. A correct call cannot be overturned, so I replaced it with the Triple-A success rates. A challenge succeeded in 96.2% of the cases where the call was wrong and 4.0% of the cases where it was right, and the rule "succeeds only if the call was wrong" matches the outcome in 96.1% of the 6,927 challenges.
 
-**How much the result depends on assumptions.** The main script assumes that only pitches in the top 10% of challenge probability get challenged, and that challenges left in MLB is a random sample of the Triple-A values. I repeated the simulation with a top 20%, 10%, and 5% threshold and three random seeds each.
+As a check on the overturn probability, the predicted rate of overturned calls in the Triple-A data is 1.14% per pitch (held-out challenge probability times the success rate), and the actual rate is 1.13%.
+
+### How much the result depends on assumptions
+
+The main script assumes that only pitches in the top 10% of challenge probability get challenged, and that challenges left in MLB is a sample of the Triple-A values in the same inning. XGBoost also uses random subsamples, so the challenge model changes a little with the seed. I repeated the simulation with a top 20%, 10%, and 5% threshold and five seeds each, refitting the challenge model every time.
 
 | Challenge threshold | Best 10 catchers | Worst 10 catchers |
 |---|---|---|
-| Top 20% | -21.9% to -22.1% | -1.7% to -2.8% |
-| Top 10% | -21.1% to -21.3% | -2.5% to -3.6% |
-| Top 5% | -17.1% to -17.4% | -5.5% to -6.5% |
+| Top 20% | -9.2% to -11.1% | -12.3% to -17.0% |
+| Top 10% | -8.9% to -10.6% | -12.4% to -17.2% |
+| Top 5% | -6.8% to -9.1% | -13.0% to -17.6% |
 
-Resampling whole games 200 times gives a 95% interval of -24.3% to -17.8% for the best 10 catchers and -7.0% to -0.5% for the worst 10. The challenge models are not refit in the bootstrap, so this only covers which MLB games are in the sample.
+The seed alone moves the result by a few percentage points, which is why I report ranges. Averaged over all 15 runs, the best 10 catchers lose 9.3% and the worst 10 catchers shrink by 14.9%. Resampling whole games 200 times gives a 95% interval of -12.1% to -5.6% for the best 10 catchers and -16.8% to -11.9% for the worst 10. The challenge model is not refit in the bootstrap, so this only covers which MLB games are in the sample.
 
-**Limits.** The challenge models are trained on Triple-A and applied to MLB, and no MLB challenge data exists to test that step. The random challenges-left assumption and the 10% challenge threshold are also not tested against real MLB behavior. Under the context-specific version, the worst catchers do not improve at all, so the worst-framer result depends on which version is used.
+### Limits
+
+The challenge model is trained on Triple-A and applied to MLB, and no MLB challenge data exists to test that step. The challenges left sampling and the 10% challenge threshold are also not tested against real MLB behavior.
 
 ---
 
